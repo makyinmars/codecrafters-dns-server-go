@@ -3,10 +3,8 @@ package main
 import (
 	"fmt"
 	"net"
+	"strings"
 )
-
-// Ensures gofmt doesn't remove the "net" import in stage 1 (feel free to remove this!)
-var _ = net.ListenUDP
 
 // Header represents a DNS message header
 type Header struct {
@@ -18,9 +16,96 @@ type Header struct {
 	ARCount uint16 // number of additional records
 }
 
+// Question represents a DNS question section
+type Question struct {
+	Name  string // domain name
+	Type  uint16 // query type
+	Class uint16 // query class
+}
+
+// encodeDNSName converts a domain name to DNS wire format
+func encodeDNSName(name string) []byte {
+	var encoded []byte
+	if name == "" {
+		return []byte{0}
+	}
+
+	labels := strings.Split(name, ".")
+	for _, label := range labels {
+		encoded = append(encoded, byte(len(label)))
+		encoded = append(encoded, []byte(label)...)
+	}
+	encoded = append(encoded, 0) // terminating byte
+	return encoded
+}
+
+// decodeDNSName extracts a domain name from DNS wire format
+func decodeDNSName(data []byte, offset int) (string, int, error) {
+	var name []string
+	pos := offset
+
+	for pos < len(data) {
+		length := int(data[pos])
+		if length == 0 {
+			pos++
+			break
+		}
+
+		if pos+1+length > len(data) {
+			return "", 0, fmt.Errorf("invalid DNS name format")
+		}
+
+		name = append(name, string(data[pos+1:pos+1+length]))
+		pos += 1 + length
+	}
+
+	return strings.Join(name, "."), pos - offset, nil
+}
+
 // NewHeader creates a new DNS header with default values
 func NewHeader() Header {
-	return Header{}
+	return Header{
+		ID: 1234, // Set default ID to 1234
+	}
+}
+
+// ToBytes converts the Question to wire format
+func (q *Question) ToBytes() []byte {
+	var bytes []byte
+
+	// Encode domain name
+	bytes = append(bytes, encodeDNSName(q.Name)...)
+
+	// Type (2 bytes)
+	bytes = append(bytes, byte(q.Type>>8), byte(q.Type))
+
+	// Class (2 bytes)
+	bytes = append(bytes, byte(q.Class>>8), byte(q.Class))
+
+	return bytes
+}
+
+// FromBytes parses a byte slice into the Question structure
+func (q *Question) FromBytes(data []byte, offset int) (int, error) {
+	var err error
+	var nameLen int
+
+	// Decode domain name
+	q.Name, nameLen, err = decodeDNSName(data[offset:], 0)
+	if err != nil {
+		return 0, err
+	}
+
+	offset += nameLen
+	if offset+4 > len(data) {
+		return 0, fmt.Errorf("question data too short")
+	}
+
+	// Extract Type and Class
+	q.Type = uint16(data[offset])<<8 | uint16(data[offset+1])
+	q.Class = uint16(data[offset+2])<<8 | uint16(data[offset+3])
+
+	return nameLen + 4, nil
 }
 
 // SetQR sets the Query/Response flag (0 for query, 1 for response)
@@ -117,13 +202,23 @@ func main() {
 			continue
 		}
 
+		// Parse question section
+		question := Question{}
+		_, err = question.FromBytes(buf[12:size], 0) // 12 is the size of the header
+		if err != nil {
+			fmt.Println("Error parsing DNS question:", err)
+			continue
+		}
+
 		// Create response header
 		responseHeader := NewHeader()
 		responseHeader.ID = header.ID // Use the same ID as the query
 		responseHeader.SetQR(true)
+		responseHeader.QDCount = 1 // We have one question
 
-		// Create an empty response
+		// Create response with both header and question
 		response := responseHeader.ToBytes()
+		response = append(response, question.ToBytes()...)
 
 		_, err = udpConn.WriteToUDP(response, source)
 		if err != nil {
