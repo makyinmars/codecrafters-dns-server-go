@@ -23,6 +23,41 @@ type Question struct {
 	Class uint16 // query class
 }
 
+// ResourceRecord represents a DNS resource record
+type ResourceRecord struct {
+	Name     string // domain name
+	Type     uint16 // record type
+	Class    uint16 // record class
+	TTL      uint32 // time to live
+	RDLength uint16 // length of RDATA field
+	RData    net.IP // RDATA field (IP address for A records)
+}
+
+// ToBytes converts the ResourceRecord to wire format
+func (rr *ResourceRecord) ToBytes() []byte {
+	var bytes []byte
+
+	// Name section
+	bytes = append(bytes, encodeDNSName(rr.Name)...)
+
+	// Type (2 bytes)
+	bytes = append(bytes, byte(rr.Type>>8), byte(rr.Type))
+
+	// Class (2 bytes)
+	bytes = append(bytes, byte(rr.Class>>8), byte(rr.Class))
+
+	// TTL (4 bytes)
+	bytes = append(bytes, byte(rr.TTL>>24), byte(rr.TTL>>16), byte(rr.TTL>>8), byte(rr.TTL))
+
+	// RDLength (2 bytes)
+	bytes = append(bytes, byte(rr.RDLength>>8), byte(rr.RDLength))
+
+	// RDATA (4 bytes for A record)
+	bytes = append(bytes, rr.RData.To4()...)
+
+	return bytes
+}
+
 // encodeDNSName converts a domain name to DNS wire format
 func encodeDNSName(name string) []byte {
 	var encoded []byte
@@ -216,9 +251,23 @@ func main() {
 		responseHeader.SetQR(true)
 		responseHeader.QDCount = 1 // We have one question
 
-		// Create response with both header and question
+		// Create an A record response
+		answer := ResourceRecord{
+			Name:     question.Name,
+			Type:     1,                      // 1 = A record
+			Class:    1,                      // 1 = IN (Internet)
+			TTL:      60,                     // 60 seconds TTL
+			RDLength: 4,                      // IPv4 address is 4 bytes
+			RData:    net.ParseIP("8.8.8.8"), // Example IP address
+		}
+
+		// Update header to include answer
+		responseHeader.ANCount = 1 // One answer
+
+		// Create response with header, question, and answer
 		response := responseHeader.ToBytes()
 		response = append(response, question.ToBytes()...)
+		response = append(response, answer.ToBytes()...)
 
 		_, err = udpConn.WriteToUDP(response, source)
 		if err != nil {
